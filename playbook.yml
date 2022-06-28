@@ -1,0 +1,157 @@
+---
+
+- hosts: all
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+
+
+  - name: Add Docker apt key
+    apt_key:
+      id: 0EBFCD88
+      url: https://download.docker.com/linux/ubuntu/gpg
+      state: present
+    become: true
+
+
+  - name: Add Docker repository.
+    apt_repository:
+      repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+      state: present
+      update_cache: true
+    become: true
+
+
+  - name: Install node_exporter & docker
+    ansible.builtin.apt:
+      name: "{{ item }}"
+      state: present
+      update_cache: true
+      cache_valid_time: 3600
+    loop:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - software-properties-common
+      - prometheus-node-exporter
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - python3-pip
+
+
+  - name: Install python dependencies
+    pip:
+      name:
+        - PyYAML
+        - docker
+        - docker-compose
+
+
+  - name: Create proj directory
+    file:
+      path: '/srv/monitoring'
+      state: directory
+      mode: '0755'
+
+
+  - name: make config prometheus
+    copy:
+      dest: /srv/monitoring/prometheus.yml
+      content: |
+
+        global:
+        scrape_configs:
+          - job_name: 'node-exporter'
+            static_configs:
+              - targets: ['host.docker.internal:9100']
+
+
+  - name: make datasources grafana
+    copy:
+      dest: /srv/monitoring/datasources.yml
+      content: |
+
+        apiVersion: 1
+        deleteDatasources:
+          - name: Prometheus
+            orgId: 1
+        datasources:
+          - name: Prometheus
+            type: prometheus
+            access: proxy
+            orgId: 1
+            url: http://prometheus:9090
+            basicAuth: false
+            isDefault: true
+            jsonData:
+               graphiteVersion: "1.1"
+               tlsAuth: false
+               tlsAuthWithCACert: false
+            version: 1
+            editable: false
+
+
+  - name: Create dashboards directory
+    file:
+      path: '/srv/monitoring/dashboards'
+      state: directory
+
+  - name: setup provision grafana
+    copy:
+      dest: /srv/monitoring/dashboards/dashboard.yml
+      content: |
+
+        apiVersion: 1
+        providers:
+          - name: 'Prometheus'
+            orgId: 1
+            folder: ''
+            type: file
+            disableDeletion: true
+            editable: false
+            options:
+              path: /etc/grafana/provisioning/dashboards
+
+
+  - name: Download dashboard
+    get_url:
+      url: https://grafana.com/api/dashboards/1860/revisions/27/download
+      dest:  '/srv/monitoring/dashboards'
+
+
+  - name: make docker-compose.yml
+    copy:
+      dest: '/srv/monitoring/docker-compose.yml'
+      content: |
+
+        version: "2"
+        services:
+
+          prometheus:
+            image: prom/prometheus:v2.36.2
+            container_name: prometheus
+            volumes:
+              - "./prometheus.yml:/etc/prometheus/prometheus.yml"
+            extra_hosts:
+              - "host.docker.internal:host-gateway"
+
+          grafana:
+            image: grafana/grafana:8.5.6
+            container_name: grafana
+            volumes:
+              - "./datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml"
+              - "./dashboards:/etc/grafana/provisioning/dashboards"
+            environment:
+              - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+              - GF_AUTH_ANONYMOUS_ENABLED=true
+            user: "472"
+            ports:
+              - "3000:3000"
+
+
+  - name: Create and start services
+    docker_compose:
+      project_src: '/srv/monitoring'
+
+...
